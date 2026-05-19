@@ -12,7 +12,6 @@
     * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
     body { margin: 0; background: #080f1a; color: #e2e8f0; font-family: 'Segoe UI', 'Arial Hebrew', Arial, sans-serif; direction: rtl; }
     @keyframes fadeIn { from { opacity:0; transform:translateY(6px); } to { opacity:1; transform:none; } }
-    @keyframes spin { to { transform: rotate(360deg); } }
     .fade { animation: fadeIn 0.25s ease; }
     input, select, button { font-family: inherit; }
     input:focus { outline: none; border-color: #3b82f6 !important; }
@@ -20,10 +19,8 @@
 </head>
 <body>
 <div id="root"></div>
-
 <script src="https://cdnjs.cloudflare.com/ajax/libs/react/18.2.0/umd/react.production.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.2.0/umd/react-dom.production.min.js"></script>
-
 <script>
 const { useState, useRef, useEffect } = React;
 
@@ -47,16 +44,35 @@ const PROCEDURES = [
 ];
 
 const FINDINGS = ["פוליפקטומי", "קשירת דליות", "קליפ", "APC", "ביופסיה", "ספריי", "אובסקו", "ביפולאר", "סטנט", "אחר"];
-const STEPS = { ID: "id", PROCEDURE: "procedure", DONE: "done" };
+const STEPS = { LOGIN: "login", ID: "id", PROCEDURE: "procedure", DONE: "done" };
 const SHEETS_URL = "https://script.google.com/macros/s/AKfycbzFyXHshRehpTmg_87qtaUElv-BUDEcBgtD-pnjmsmFfUaHgpZb7NONm7gxc3r1oCqz/exec";
+const APP_PASSWORD = "gastro123";
+const TOKEN = "gastro123";
+
+function todayISO() {
+  const d = new Date();
+  return d.toISOString().split("T")[0];
+}
+
+function isoToHebrew(iso) {
+  if (!iso) return "";
+  const [y, m, day] = iso.split("-");
+  return day + "/" + m + "/" + y;
+}
 
 async function sendToSheets(rec) {
   await fetch(SHEETS_URL, {
-    method: "POST",
-    mode: "no-cors",
+    method: "POST", mode: "no-cors",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ ...rec, token: "gastro123" }),
+    body: JSON.stringify({ ...rec, token: TOKEN }),
   });
+}
+
+async function fetchFromSheets() {
+  const res = await fetch(SHEETS_URL + "?token=" + TOKEN);
+  const data = await res.json();
+  if (data.success) return data.records;
+  return [];
 }
 
 function downloadCSV(records) {
@@ -88,29 +104,50 @@ function ProgressBar({ procedure, count }) {
 }
 
 function App() {
-  const [step, setStep] = useState(STEPS.ID);
-  const [records, setRecords] = useState(() => {
-    try { return JSON.parse(localStorage.getItem("gastro_records") || "[]"); } catch { return []; }
-  });
+  const [step, setStep] = useState(STEPS.LOGIN);
+  const [password, setPassword] = useState("");
+  const [loginError, setLoginError] = useState("");
+  const [records, setRecords] = useState([]);
+  const [loading, setLoading] = useState(false);
   const [idNumber, setIdNumber] = useState("");
   const [patientName, setPatientName] = useState("");
   const [selectedProcedure, setSelectedProcedure] = useState("");
   const [selectedFindings, setSelectedFindings] = useState([]);
   const [findingsOther, setFindingsOther] = useState("");
   const [doctor, setDoctor] = useState("");
+  const [selectedDate, setSelectedDate] = useState(todayISO());
   const [error, setError] = useState("");
   const [tab, setTab] = useState("add");
   const [syncing, setSyncing] = useState(false);
   const [syncStatus, setSyncStatus] = useState(null);
   const idRef = useRef();
+  const passRef = useRef();
+
+  useEffect(() => {
+    setTimeout(() => passRef.current && passRef.current.focus(), 100);
+  }, []);
 
   useEffect(() => {
     if (step === STEPS.ID && tab === "add") setTimeout(() => idRef.current && idRef.current.focus(), 100);
   }, [step, tab]);
 
-  const saveRecords = (recs) => {
-    setRecords(recs);
-    try { localStorage.setItem("gastro_records", JSON.stringify(recs)); } catch {}
+  const loadRecords = async () => {
+    setLoading(true);
+    try {
+      const recs = await fetchFromSheets();
+      setRecords(recs);
+    } catch { }
+    setLoading(false);
+  };
+
+  const login = () => {
+    if (password === APP_PASSWORD) {
+      setLoginError("");
+      setStep(STEPS.ID);
+      loadRecords();
+    } else {
+      setLoginError("סיסמא שגויה");
+    }
   };
 
   const confirmId = () => {
@@ -125,14 +162,14 @@ function App() {
     const findingsList = selectedFindings.map(f => f === "אחר" && findingsOther ? "אחר: " + findingsOther : f).join(", ");
     const rec = {
       id: Date.now(),
-      date: new Date().toLocaleDateString("he-IL"),
+      date: isoToHebrew(selectedDate),
       id_number: idNumber,
       name: patientName.trim(),
       procedure: selectedProcedure,
       doctor: doctor.trim(),
       findings: findingsList,
     };
-    saveRecords([...records, rec]);
+    setRecords(prev => [...prev, rec]);
     setStep(STEPS.DONE);
     setSyncing(true); setSyncStatus(null);
     try { await sendToSheets(rec); setSyncStatus("ok"); }
@@ -143,7 +180,7 @@ function App() {
   const reset = () => {
     setStep(STEPS.ID); setIdNumber(""); setPatientName("");
     setSelectedProcedure(""); setSelectedFindings([]); setFindingsOther("");
-    setDoctor(""); setError(""); setSyncStatus(null);
+    setDoctor(""); setError(""); setSyncStatus(null); setSelectedDate(todayISO());
   };
 
   const counts = {};
@@ -171,6 +208,27 @@ function App() {
 
   const e = React.createElement;
 
+  // LOGIN SCREEN
+  if (step === STEPS.LOGIN) {
+    return e("div", { style: { ...S.app, display: "flex", alignItems: "center", justifyContent: "center" } },
+      e("div", { style: { width: "100%", maxWidth: 340, margin: "0 16px" } },
+        e("div", { style: { textAlign: "center", marginBottom: 32 } },
+          e("div", { style: { fontSize: 52, marginBottom: 12 } }, "🔬"),
+          e("p", { style: { fontSize: 22, fontWeight: 700, margin: "0 0 6px", color: "#f1f5f9" } }, "מעקב גסטרו"),
+          e("p", { style: { fontSize: 13, color: "#64748b", margin: 0 } }, "רישום לסילבוס התמחות")
+        ),
+        e("div", { style: { background: "#0f172a", borderRadius: 12, border: "1px solid #1e293b", padding: 20 } },
+          e("label", { style: S.label }, "סיסמא"),
+          e("input", { ref: passRef, type: "password", style: { ...S.input, textAlign: "center", fontSize: 18, letterSpacing: 4 }, placeholder: "••••••••", value: password,
+            onChange: ev => { setPassword(ev.target.value); setLoginError(""); },
+            onKeyDown: ev => ev.key === "Enter" && login() }),
+          loginError && e("p", { style: { color: "#f87171", fontSize: 13, textAlign: "center", margin: "-6px 0 10px" } }, loginError),
+          e("button", { style: S.btn("primary"), onClick: login }, "כניסה →")
+        )
+      )
+    );
+  }
+
   return e("div", { style: S.app },
     e("div", { style: S.header },
       e("p", { style: { fontSize: 19, fontWeight: 700, margin: 0, color: "#f1f5f9" } }, "🔬 מעקב פרוצדורות גסטרו"),
@@ -178,10 +236,11 @@ function App() {
     ),
     e("div", { style: S.tabs },
       e("button", { style: S.tab(tab === "add"), onClick: () => { setTab("add"); reset(); } }, "＋ רישום"),
-      e("button", { style: S.tab(tab === "progress"), onClick: () => setTab("progress") }, "📊 התקדמות"),
-      e("button", { style: S.tab(tab === "history"), onClick: () => setTab("history") }, "📋 היסטוריה")
+      e("button", { style: S.tab(tab === "progress"), onClick: () => { setTab("progress"); loadRecords(); } }, "📊 התקדמות"),
+      e("button", { style: S.tab(tab === "history"), onClick: () => { setTab("history"); loadRecords(); } }, "📋 היסטוריה")
     ),
     error && e("div", { style: S.err }, error),
+
     tab === "add" && e("div", { className: "fade" },
       step === STEPS.ID && e("div", { style: S.card }, e("div", { style: S.pad },
         e("p", { style: { fontSize: 16, fontWeight: 700, margin: "0 0 4px" } }, "מטופל חדש"),
@@ -201,6 +260,7 @@ function App() {
           onKeyDown: ev => ev.key === "Enter" && confirmId() }),
         e("button", { style: S.btn("primary"), onClick: confirmId }, "המשך ←")
       )),
+
       step === STEPS.PROCEDURE && e("div", { style: S.card }, e("div", { style: S.pad },
         e("p", { style: { fontSize: 15, fontWeight: 700, margin: "0 0 2px" } }, "פרטי פרוצדורה"),
         e("p", { style: { fontSize: 12, color: "#475569", margin: "0 0 16px" } }, 'ת"ז: ', e("strong", { style: { color: "#e2e8f0" } }, idNumber), patientName ? " · " + patientName : ""),
@@ -222,19 +282,21 @@ function App() {
           onChange: ev => { setDoctor(ev.target.value); setError(""); },
           onKeyDown: ev => ev.key === "Enter" && addRecord() }),
         e("label", { style: S.label }, "תאריך"),
-        e("input", { style: { ...S.input, color: "#475569" }, value: new Date().toLocaleDateString("he-IL"), disabled: true }),
+        e("input", { type: "date", style: { ...S.input, color: "#e2e8f0" }, value: selectedDate,
+          onChange: ev => setSelectedDate(ev.target.value) }),
         e("button", { style: S.btn("success"), onClick: addRecord }, "💾 שמור פרוצדורה"),
         e("button", { style: S.btn("ghost"), onClick: reset }, "← חזור")
       )),
+
       step === STEPS.DONE && e("div", { style: S.card }, e("div", { style: { ...S.pad, textAlign: "center", padding: "44px 18px" } },
         e("div", { style: { fontSize: 60, marginBottom: 12 } }, "✅"),
         e("p", { style: { fontSize: 19, fontWeight: 700, margin: "0 0 6px" } }, "נשמר!"),
         e("p", { style: { color: "#60a5fa", fontSize: 14, margin: "0 0 4px", fontWeight: 600 } }, selectedProcedure),
         selectedFindings.length > 0 && e("p", { style: { color: "#64748b", fontSize: 12, margin: "0 0 4px" } }, selectedFindings.join(", ")),
-        e("p", { style: { color: "#475569", fontSize: 12, margin: "0 0 16px" } }, 'ד"ר ' + doctor + " · " + new Date().toLocaleDateString("he-IL")),
+        e("p", { style: { color: "#475569", fontSize: 12, margin: "0 0 16px" } }, 'ד"ר ' + doctor + " · " + isoToHebrew(selectedDate)),
         e("div", { style: { marginBottom: 20, padding: "10px 14px", borderRadius: 8,
           background: syncing ? "#1e293b" : syncStatus === "ok" ? "#052e16" : syncStatus === "err" ? "#2d1515" : "#1e293b",
-          border: "1px solid " + (syncing ? "#334155" : syncStatus === "ok" ? "#166534" : syncStatus === "err" ? "#7f1d1d" : "#334155") } },
+          border: "1px solid " + (syncing ? "#334155" : syncStatus === "ok" ? "#166634" : syncStatus === "err" ? "#7f1d1d" : "#334155") } },
           syncing && e("p", { style: { margin: 0, fontSize: 13, color: "#64748b" } }, "⏳ שולח ל-Google Sheets..."),
           syncStatus === "ok" && e("p", { style: { margin: 0, fontSize: 13, color: "#4ade80" } }, "✅ נוסף ל-Google Sheets"),
           syncStatus === "err" && e("p", { style: { margin: 0, fontSize: 13, color: "#f87171" } }, "⚠️ לא הצליח להגיע ל-Sheets — נשמר מקומית")
@@ -242,22 +304,27 @@ function App() {
         e("button", { style: S.btn("primary"), onClick: reset }, "＋ פרוצדורה נוספת")
       ))
     ),
+
     tab === "progress" && e("div", { className: "fade", style: S.card }, e("div", { style: S.pad },
       e("div", { style: { display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 16 } },
         e("p", { style: { margin: 0, fontSize: 15, fontWeight: 700 } }, "התקדמות סילבוס"),
-        e("span", { style: { fontSize: 12, color: "#64748b" } }, records.length + ' סה"כ')
+        loading
+          ? e("span", { style: { fontSize: 12, color: "#64748b" } }, "טוען...")
+          : e("span", { style: { fontSize: 12, color: "#64748b" } }, records.length + ' סה"כ')
       ),
       ...PROCEDURES.map(p => e(ProgressBar, { key: p.name, procedure: p.name, count: counts[p.name] || 0 }))
     )),
+
     tab === "history" && e("div", { className: "fade" },
       e("div", { style: S.card }, e("div", { style: S.pad },
         e("div", { style: { display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 14 } },
           e("p", { style: { margin: 0, fontSize: 15, fontWeight: 700 } }, "היסטוריה (" + records.length + ")"),
           e("button", { onClick: () => downloadCSV(records), style: { background: "linear-gradient(135deg,#059669,#0891b2)", border: "none", borderRadius: 6, color: "#fff", padding: "7px 13px", fontSize: 12, fontWeight: 700, cursor: "pointer" } }, "⬇ CSV")
         ),
-        records.length === 0 && e("p", { style: { color: "#475569", fontSize: 13, textAlign: "center", padding: "20px 0" } }, "אין רשומות עדיין"),
-        ...[...records].reverse().map(r =>
-          e("div", { key: r.id, style: S.recRow },
+        loading && e("p", { style: { color: "#475569", fontSize: 13, textAlign: "center", padding: "20px 0" } }, "⏳ טוען נתונים..."),
+        !loading && records.length === 0 && e("p", { style: { color: "#475569", fontSize: 13, textAlign: "center", padding: "20px 0" } }, "אין רשומות עדיין"),
+        ...[...records].reverse().map((r, i) =>
+          e("div", { key: i, style: S.recRow },
             e("div", { style: { display: "flex", justifyContent: "space-between", marginBottom: 2 } },
               e("span", { style: { fontWeight: 600, fontSize: 13 } }, r.procedure),
               e("span", { style: { color: "#475569", fontSize: 11 } }, r.date)
@@ -266,10 +333,7 @@ function App() {
             r.findings && e("div", { style: { color: "#475569", fontSize: 11, marginTop: 2 } }, "🔧 " + r.findings)
           )
         )
-      )),
-      records.length > 0 && e("div", { style: { margin: "0 14px" } },
-        e("button", { onClick: () => { if (confirm("למחוק את כל הרשומות?")) saveRecords([]); }, style: { display: "block", width: "100%", padding: "14px", borderRadius: 9, border: "none", cursor: "pointer", fontSize: 12, fontWeight: 700, marginTop: 8, background: "#1e293b", color: "#ef4444" } }, "🗑 מחק הכל")
-      )
+      ))
     )
   );
 }
