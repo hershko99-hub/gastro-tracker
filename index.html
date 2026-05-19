@@ -1,0 +1,296 @@
+<!DOCTYPE html>
+<html lang="he" dir="rtl">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
+  <meta name="apple-mobile-web-app-capable" content="yes" />
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+  <meta name="apple-mobile-web-app-title" content="גסטרו" />
+  <meta name="theme-color" content="#080f1a" />
+  <title>מעקב פרוצדורות גסטרו</title>
+  <style>
+    * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+    body { margin: 0; background: #080f1a; color: #e2e8f0; font-family: 'Segoe UI', 'Arial Hebrew', Arial, sans-serif; direction: rtl; }
+    @keyframes fadeIn { from { opacity:0; transform:translateY(6px); } to { opacity:1; transform:none; } }
+    @keyframes spin { to { transform: rotate(360deg); } }
+    .fade { animation: fadeIn 0.25s ease; }
+    input, select, button { font-family: inherit; }
+    input:focus { outline: none; border-color: #3b82f6 !important; }
+  </style>
+</head>
+<body>
+<div id="root"></div>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/react/18.2.0/umd/react.production.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.2.0/umd/react-dom.production.min.js"></script>
+
+<script>
+const { useState, useRef, useEffect } = React;
+
+const PROCEDURES = [
+  { name: "גסטרוסקופיה", target: 200 },
+  { name: "עצירת דימום", target: 25 },
+  { name: "קשירת דליות", target: 5 },
+  { name: "הרחבות או תומכנים בוושט", target: 5 },
+  { name: "קולונוסקופיה", target: 200 },
+  { name: "כריתת פוליפ", target: 50 },
+  { name: "EMR", target: 5 },
+  { name: "ERCP", target: 15 },
+  { name: "EUS", target: 15 },
+  { name: "קפסולה של המעי הדק", target: 10 },
+  { name: "מנומטריה של הוושט", target: 5 },
+  { name: "ניטור חומצה ואימפדנס בוושט", target: 5 },
+  { name: "מנומטריה אנורקטית", target: 5 },
+  { name: "סונאר טרנסרקטלי", target: 3 },
+  { name: "מיפוי התרוקנות קיבה", target: 3 },
+  { name: "צילום זמן מעבר מעי הגס", target: 3 },
+];
+
+const FINDINGS = ["פוליפקטומי", "קשירת דליות", "קליפ", "APC", "ביופסיה", "ספריי", "אובסקו", "ביפולאר", "סטנט", "אחר"];
+const STEPS = { ID: "id", PROCEDURE: "procedure", DONE: "done" };
+const SHEETS_URL = "https://script.google.com/macros/s/AKfycbzFyXHshRehpTmg_87qtaUElv-BUDEcBgtD-pnjmsmFfUaHgpZb7NONm7gxc3r1oCqz/exec";
+
+async function sendToSheets(rec) {
+  await fetch(SHEETS_URL, {
+    method: "POST",
+    mode: "no-cors",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(rec),
+  });
+}
+
+function downloadCSV(records) {
+  const headers = ["תאריך", "מספר זהות", "שם", "פרוצדורה", "הערות", "רופא אחראי"];
+  const rows = records.map(r => [r.date, r.id_number, r.name || "", r.procedure, r.findings || "", r.doctor]);
+  const bom = "\uFEFF";
+  const csv = bom + [headers, ...rows].map(r => r.map(c => '"' + c + '"').join(",")).join("\n");
+  const blob = new Blob([csv], { type: "text/csv;charset=utf-8;" });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url; a.download = "gastro_procedures.csv"; a.click();
+  URL.revokeObjectURL(url);
+}
+
+function ProgressBar({ procedure, count }) {
+  const p = PROCEDURES.find(p => p.name === procedure);
+  if (!p) return null;
+  const pct = Math.min((count / p.target) * 100, 100);
+  const done = pct >= 100;
+  return React.createElement("div", { style: { marginBottom: 8 } },
+    React.createElement("div", { style: { display: "flex", justifyContent: "space-between", fontSize: 11, marginBottom: 3, color: done ? "#4ade80" : "#94a3b8" } },
+      React.createElement("span", null, procedure),
+      React.createElement("span", { style: { fontWeight: done ? 700 : 400 } }, count + "/" + p.target + (done ? " ✓" : ""))
+    ),
+    React.createElement("div", { style: { height: 5, background: "#1e293b", borderRadius: 3, overflow: "hidden" } },
+      React.createElement("div", { style: { height: "100%", width: pct + "%", background: done ? "linear-gradient(90deg,#4ade80,#22d3ee)" : "linear-gradient(90deg,#3b82f6,#8b5cf6)", borderRadius: 3, transition: "width 0.5s ease" } })
+    )
+  );
+}
+
+function App() {
+  const [step, setStep] = useState(STEPS.ID);
+  const [records, setRecords] = useState(() => {
+    try { return JSON.parse(localStorage.getItem("gastro_records") || "[]"); } catch { return []; }
+  });
+  const [idNumber, setIdNumber] = useState("");
+  const [patientName, setPatientName] = useState("");
+  const [selectedProcedure, setSelectedProcedure] = useState("");
+  const [selectedFindings, setSelectedFindings] = useState([]);
+  const [findingsOther, setFindingsOther] = useState("");
+  const [doctor, setDoctor] = useState("");
+  const [error, setError] = useState("");
+  const [tab, setTab] = useState("add");
+  const [syncing, setSyncing] = useState(false);
+  const [syncStatus, setSyncStatus] = useState(null);
+  const idRef = useRef();
+
+  useEffect(() => {
+    if (step === STEPS.ID && tab === "add") setTimeout(() => idRef.current && idRef.current.focus(), 100);
+  }, [step, tab]);
+
+  const saveRecords = (recs) => {
+    setRecords(recs);
+    try { localStorage.setItem("gastro_records", JSON.stringify(recs)); } catch {}
+  };
+
+  const confirmId = () => {
+    if (idNumber.length < 5) { setError("נא להזין מספר זהות תקין"); return; }
+    setError(""); setStep(STEPS.PROCEDURE);
+  };
+
+  const toggleFinding = (f) => setSelectedFindings(prev => prev.includes(f) ? prev.filter(x => x !== f) : [...prev, f]);
+
+  const addRecord = async () => {
+    if (!selectedProcedure || !doctor.trim()) { setError("נא למלא פרוצדורה ורופא"); return; }
+    const findingsList = selectedFindings.map(f => f === "אחר" && findingsOther ? "אחר: " + findingsOther : f).join(", ");
+    const rec = {
+      id: Date.now(),
+      date: new Date().toLocaleDateString("he-IL"),
+      id_number: idNumber,
+      name: patientName.trim(),
+      procedure: selectedProcedure,
+      doctor: doctor.trim(),
+      findings: findingsList,
+    };
+    saveRecords([...records, rec]);
+    setStep(STEPS.DONE);
+    setSyncing(true); setSyncStatus(null);
+    try { await sendToSheets(rec); setSyncStatus("ok"); }
+    catch { setSyncStatus("err"); }
+    finally { setSyncing(false); }
+  };
+
+  const reset = () => {
+    setStep(STEPS.ID); setIdNumber(""); setPatientName("");
+    setSelectedProcedure(""); setSelectedFindings([]); setFindingsOther("");
+    setDoctor(""); setError(""); setSyncStatus(null);
+  };
+
+  const counts = {};
+  records.forEach(r => { counts[r.procedure] = (counts[r.procedure] || 0) + 1; });
+
+  const S = {
+    app: { minHeight: "100vh", background: "#080f1a", color: "#e2e8f0", paddingBottom: 40 },
+    header: { background: "linear-gradient(135deg,#0f172a,#1e1b4b)", padding: "18px 20px 14px", borderBottom: "1px solid #1e293b", position: "sticky", top: 0, zIndex: 10 },
+    tabs: { display: "flex", background: "#0f172a", borderBottom: "1px solid #1e293b" },
+    tab: (a) => ({ flex: 1, padding: "12px 4px", border: "none", background: "transparent", color: a ? "#60a5fa" : "#475569", fontSize: 13, fontWeight: a ? 700 : 400, cursor: "pointer", borderBottom: a ? "2px solid #3b82f6" : "2px solid transparent" }),
+    card: { margin: "14px", background: "#0f172a", borderRadius: 12, border: "1px solid #1e293b" },
+    pad: { padding: "18px" },
+    label: { fontSize: 12, color: "#64748b", marginBottom: 5, display: "block" },
+    input: { width: "100%", padding: "13px 14px", background: "#1e293b", border: "1px solid #334155", borderRadius: 9, color: "#e2e8f0", fontSize: 15, boxSizing: "border-box", direction: "rtl", marginBottom: 12 },
+    select: { width: "100%", padding: "13px 14px", background: "#1e293b", border: "1px solid #334155", borderRadius: 9, color: "#e2e8f0", fontSize: 14, marginBottom: 12, direction: "rtl" },
+    btn: (v) => ({
+      display: "block", width: "100%", padding: "14px", borderRadius: 9, border: "none", cursor: "pointer", fontSize: 15, fontWeight: 700, marginTop: 8,
+      background: v === "success" ? "linear-gradient(135deg,#059669,#0891b2)" : v === "ghost" ? "#1e293b" : "linear-gradient(135deg,#3b82f6,#6366f1)",
+      color: v === "ghost" ? "#94a3b8" : "#fff",
+    }),
+    chip: (a) => ({ padding: "7px 13px", borderRadius: 99, border: "1px solid " + (a ? "#3b82f6" : "#334155"), background: a ? "#1e3a5f" : "#1e293b", color: a ? "#60a5fa" : "#94a3b8", fontSize: 13, cursor: "pointer", fontWeight: a ? 700 : 400 }),
+    recRow: { padding: "10px 0", borderBottom: "1px solid #0f172a" },
+    err: { margin: "10px 14px 0", padding: "10px 12px", background: "#450a0a", borderRadius: 8, color: "#f87171", fontSize: 13 },
+  };
+
+  const e = React.createElement;
+
+  return e("div", { style: S.app },
+    // Header
+    e("div", { style: S.header },
+      e("p", { style: { fontSize: 19, fontWeight: 700, margin: 0, color: "#f1f5f9" } }, "🔬 מעקב פרוצדורות גסטרו"),
+      e("p", { style: { fontSize: 11, color: "#64748b", margin: "2px 0 0" } }, "רישום לסילבוס התמחות")
+    ),
+
+    // Tabs
+    e("div", { style: S.tabs },
+      e("button", { style: S.tab(tab === "add"), onClick: () => { setTab("add"); reset(); } }, "＋ רישום"),
+      e("button", { style: S.tab(tab === "progress"), onClick: () => setTab("progress") }, "📊 התקדמות"),
+      e("button", { style: S.tab(tab === "history"), onClick: () => setTab("history") }, "📋 היסטוריה")
+    ),
+
+    error && e("div", { style: S.err }, error),
+
+    // ADD TAB
+    tab === "add" && e("div", { className: "fade" },
+
+      // STEP ID
+      step === STEPS.ID && e("div", { style: S.card }, e("div", { style: S.pad },
+        e("p", { style: { fontSize: 16, fontWeight: 700, margin: "0 0 4px" } }, "מטופל חדש"),
+        e("p", { style: { fontSize: 12, color: "#64748b", margin: "0 0 18px" } }, "הכנס פרטים מהמדבקה"),
+        e("label", { style: S.label }, "מספר זהות *"),
+        e("input", { ref: idRef, style: { ...S.input, fontSize: 24, letterSpacing: 4, textAlign: "center", fontWeight: 700 }, placeholder: "000000000", value: idNumber, inputMode: "numeric",
+          onChange: ev => setIdNumber(ev.target.value.replace(/\D/g, "").slice(0, 9)),
+          onKeyDown: ev => ev.key === "Enter" && confirmId() }),
+        e("div", { style: { display: "flex", gap: 5, justifyContent: "center", marginBottom: 16 } },
+          ...Array.from({ length: 9 }).map((_, i) =>
+            e("div", { key: i, style: { width: 8, height: 8, borderRadius: "50%", background: i < idNumber.length ? "#3b82f6" : "#1e293b", transition: "background 0.15s" } })
+          )
+        ),
+        e("label", { style: S.label }, "שם מטופל (אופציונלי)"),
+        e("input", { style: S.input, placeholder: "שם מלא", value: patientName,
+          onChange: ev => setPatientName(ev.target.value),
+          onKeyDown: ev => ev.key === "Enter" && confirmId() }),
+        e("button", { style: S.btn("primary"), onClick: confirmId }, "המשך ←")
+      )),
+
+      // STEP PROCEDURE
+      step === STEPS.PROCEDURE && e("div", { style: S.card }, e("div", { style: S.pad },
+        e("p", { style: { fontSize: 15, fontWeight: 700, margin: "0 0 2px" } }, "פרטי פרוצדורה"),
+        e("p", { style: { fontSize: 12, color: "#475569", margin: "0 0 16px" } }, 'ת"ז: ', e("strong", { style: { color: "#e2e8f0" } }, idNumber), patientName ? " · " + patientName : ""),
+        e("label", { style: S.label }, "פרוצדורה *"),
+        e("select", { style: S.select, value: selectedProcedure, onChange: ev => { setSelectedProcedure(ev.target.value); setError(""); } },
+          e("option", { value: "" }, "— בחר פרוצדורה —"),
+          ...PROCEDURES.map(p => {
+            const c = counts[p.name] || 0;
+            return e("option", { key: p.name, value: p.name }, p.name + " (" + c + "/" + p.target + ")" + (c >= p.target ? " ✓" : ""));
+          })
+        ),
+        e("label", { style: S.label }, "הערות / פעולות (אופציונלי)"),
+        e("div", { style: { display: "flex", flexWrap: "wrap", gap: 7, marginBottom: 12 } },
+          ...FINDINGS.map(f => e("button", { key: f, onClick: () => toggleFinding(f), style: S.chip(selectedFindings.includes(f)) }, f))
+        ),
+        selectedFindings.includes("אחר") && e("input", { style: S.input, placeholder: "פרט...", value: findingsOther, onChange: ev => setFindingsOther(ev.target.value) }),
+        e("label", { style: S.label }, "רופא אחראי *"),
+        e("input", { style: S.input, placeholder: "שם הרופא", value: doctor,
+          onChange: ev => { setDoctor(ev.target.value); setError(""); },
+          onKeyDown: ev => ev.key === "Enter" && addRecord() }),
+        e("label", { style: S.label }, "תאריך"),
+        e("input", { style: { ...S.input, color: "#475569" }, value: new Date().toLocaleDateString("he-IL"), disabled: true }),
+        e("button", { style: S.btn("success"), onClick: addRecord }, "💾 שמור פרוצדורה"),
+        e("button", { style: S.btn("ghost"), onClick: reset }, "← חזור")
+      )),
+
+      // STEP DONE
+      step === STEPS.DONE && e("div", { style: S.card }, e("div", { style: { ...S.pad, textAlign: "center", padding: "44px 18px" } },
+        e("div", { style: { fontSize: 60, marginBottom: 12 } }, "✅"),
+        e("p", { style: { fontSize: 19, fontWeight: 700, margin: "0 0 6px" } }, "נשמר!"),
+        e("p", { style: { color: "#60a5fa", fontSize: 14, margin: "0 0 4px", fontWeight: 600 } }, selectedProcedure),
+        selectedFindings.length > 0 && e("p", { style: { color: "#64748b", fontSize: 12, margin: "0 0 4px" } }, selectedFindings.join(", ")),
+        e("p", { style: { color: "#475569", fontSize: 12, margin: "0 0 16px" } }, "ד\"ר " + doctor + " · " + new Date().toLocaleDateString("he-IL")),
+        e("div", { style: { marginBottom: 20, padding: "10px 14px", borderRadius: 8,
+          background: syncing ? "#1e293b" : syncStatus === "ok" ? "#052e16" : syncStatus === "err" ? "#2d1515" : "#1e293b",
+          border: "1px solid " + (syncing ? "#334155" : syncStatus === "ok" ? "#166534" : syncStatus === "err" ? "#7f1d1d" : "#334155") } },
+          syncing && e("p", { style: { margin: 0, fontSize: 13, color: "#64748b" } }, "⏳ שולח ל-Google Sheets..."),
+          syncStatus === "ok" && e("p", { style: { margin: 0, fontSize: 13, color: "#4ade80" } }, "✅ נוסף ל-Google Sheets"),
+          syncStatus === "err" && e("p", { style: { margin: 0, fontSize: 13, color: "#f87171" } }, "⚠️ לא הצליח להגיע ל-Sheets — נשמר מקומית")
+        ),
+        e("button", { style: S.btn("primary"), onClick: reset }, "＋ פרוצדורה נוספת")
+      ))
+    ),
+
+    // PROGRESS TAB
+    tab === "progress" && e("div", { className: "fade", style: S.card }, e("div", { style: S.pad },
+      e("div", { style: { display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 16 } },
+        e("p", { style: { margin: 0, fontSize: 15, fontWeight: 700 } }, "התקדמות סילבוס"),
+        e("span", { style: { fontSize: 12, color: "#64748b" } }, records.length + ' סה"כ')
+      ),
+      ...PROCEDURES.map(p => e(ProgressBar, { key: p.name, procedure: p.name, count: counts[p.name] || 0 }))
+    )),
+
+    // HISTORY TAB
+    tab === "history" && e("div", { className: "fade" },
+      e("div", { style: S.card }, e("div", { style: S.pad },
+        e("div", { style: { display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 14 } },
+          e("p", { style: { margin: 0, fontSize: 15, fontWeight: 700 } }, "היסטוריה (" + records.length + ")"),
+          e("button", { onClick: () => downloadCSV(records), style: { background: "linear-gradient(135deg,#059669,#0891b2)", border: "none", borderRadius: 6, color: "#fff", padding: "7px 13px", fontSize: 12, fontWeight: 700, cursor: "pointer" } }, "⬇ CSV")
+        ),
+        records.length === 0 && e("p", { style: { color: "#475569", fontSize: 13, textAlign: "center", padding: "20px 0" } }, "אין רשומות עדיין"),
+        ...[...records].reverse().map(r =>
+          e("div", { key: r.id, style: S.recRow },
+            e("div", { style: { display: "flex", justifyContent: "space-between", marginBottom: 2 } },
+              e("span", { style: { fontWeight: 600, fontSize: 13 } }, r.procedure),
+              e("span", { style: { color: "#475569", fontSize: 11 } }, r.date)
+            ),
+            e("div", { style: { color: "#64748b", fontSize: 12 } }, 'ת"ז: ' + r.id_number + (r.name ? " · " + r.name : "") + " · ד\"ר " + r.doctor),
+            r.findings && e("div", { style: { color: "#475569", fontSize: 11, marginTop: 2 } }, "🔧 " + r.findings)
+          )
+        )
+      )),
+      records.length > 0 && e("div", { style: { margin: "0 14px" } },
+        e("button", { onClick: () => { if (confirm("למחוק את כל הרשומות?")) saveRecords([]); }, style: { display: "block", width: "100%", padding: "14px", borderRadius: 9, border: "none", cursor: "pointer", fontSize: 12, fontWeight: 700, marginTop: 8, background: "#1e293b", color: "#ef4444" } }, "🗑 מחק הכל")
+      )
+    )
+  );
+}
+
+ReactDOM.createRoot(document.getElementById("root")).render(React.createElement(App));
+</script>
+</body>
+</html>
